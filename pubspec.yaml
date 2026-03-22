@@ -81,7 +81,7 @@ flutter:
   assets:
     - lib/assets/
 msix_config:
-  display_name: Not Defterim
+  display_name: TODOAPP
   publisher_display_name: Adınız
   identity_name: com.sirket.notdefteri
   msix_version: 1.0.0.0

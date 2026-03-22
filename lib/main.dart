@@ -81,8 +81,9 @@ class Item {
   IconData? iconData; // Klasör ikonu için
   Color? folderColor; // Klasör rengi için
   bool isArchived; // Arşiv durumu için
+  int sortOrder; // Sıralama için
   List<Item> children = [];
-
+  
   Item({
     required this.id,
     required this.name,
@@ -94,6 +95,7 @@ class Item {
     this.iconData,
     this.folderColor,
     this.isArchived = false,
+    this.sortOrder = 0,
   });
 
   Map<String, dynamic> toMap() => {
@@ -107,6 +109,7 @@ class Item {
         'iconData': iconData?.codePoint, // IconData'yı codePoint olarak sakla
         'folderColor': folderColor?.value, // Color'ı value olarak sakla
         'isArchived': isArchived ? 1 : 0, // Arşiv durumunu sakla
+        'sortOrder': sortOrder, // Sıralama değerini sakla
       };
 
   factory Item.fromMap(Map<String, dynamic> map) => Item(
@@ -120,6 +123,7 @@ class Item {
         iconData: map['iconData'] != null ? _getIconDataFromCodePoint(map['iconData']) : null,
         folderColor: map['folderColor'] != null ? Color(map['folderColor']) : null,
         isArchived: map['isArchived'] == 1 || map['isArchived'] == true || map['Archived'] == 1 || map['Archived'] == true,
+        sortOrder: map['sortOrder'] ?? 0, // Sıralama değerini oku
       );
 }
 
@@ -159,7 +163,7 @@ class DatabaseHelper {
   Future<Database> _initDB(String fileName) async {
     Directory dir = await getApplicationDocumentsDirectory();
     String path = p.join(dir.path, fileName);
-    return await openDatabase(path, version: 3, onCreate: _createDB, onUpgrade: _onUpgrade);
+    return await openDatabase(path, version: 4, onCreate: _createDB, onUpgrade: _onUpgrade);
   }
 
   Future _createDB(Database db, int version) async {
@@ -174,7 +178,8 @@ class DatabaseHelper {
         reminder TEXT,
         iconData INTEGER,
         folderColor INTEGER,
-        isArchived INTEGER NOT NULL DEFAULT 0
+        isArchived INTEGER NOT NULL DEFAULT 0,
+        sortOrder INTEGER NOT NULL DEFAULT 0
       )
     ''');
   }
@@ -192,6 +197,15 @@ class DatabaseHelper {
       } catch (e) {
         // Eğer sütun zaten varsa hata ignore et
         print('isArchived column already exists or has typo: $e');
+      }
+    }
+    if (oldVersion < 4) {
+      try {
+        // sortOrder sütununu ekle
+        await db.execute('ALTER TABLE items ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0');
+      } catch (e) {
+        // Eğer sütun zaten varsa hata ignore et
+        print('sortOrder column already exists: $e');
       }
     }
   }
@@ -220,7 +234,7 @@ class DatabaseHelper {
       final maps = await db.query('items', 
           where: whereClause, 
           whereArgs: whereArgs,
-          orderBy: 'id ASC' // Her zaman aynı sıralama için
+          orderBy: 'sortOrder ASC' // Sıralama değerine göre sırala
       );
       return maps.map((e) => Item.fromMap(e)).toList();
     } catch (e) {
@@ -363,6 +377,9 @@ class _FolderPageState extends State<FolderPage> {
   }
 
   Future<void> _loadItems() async {
+    // Önce tüm öğeleri yeniden sırala
+    await _reorderAllItems(parentId: null);
+    
     final items = await DatabaseHelper.instance.getItems(parentId: null);
     for (var item in items) {
       if (item.isFolder) item.children = await _loadChildren(item.id);
@@ -437,13 +454,7 @@ class _FolderPageState extends State<FolderPage> {
             left: 20,
             right: 20,
             child: DragTarget<Item>(
-              onAcceptWithDetails: (details) async {
-                final draggedItem = details.data;
-                _deleteController.play();
-                await DatabaseHelper.instance.deleteItem(draggedItem.id);
-                await FirestoreService().deleteItem(draggedItem.id);
-                _loadItems();
-              },
+              onAcceptWithDetails: (details) => _moveItem(details.data, "delete"),
               builder: (context, candidateData, _) {
                 bool isHovering = candidateData.isNotEmpty;
                 return AnimatedContainer(
@@ -656,7 +667,60 @@ class _FolderPageState extends State<FolderPage> {
     return ListView.builder(
       padding: const EdgeInsets.only(bottom: 120),
       itemCount: _rootItems.length,
-      itemBuilder: (context, index) => _buildItem(_rootItems[index]),
+      itemBuilder: (context, index) {
+        final item = _rootItems[index];
+        
+        return DragTarget<Item>(
+          onWillAcceptWithDetails: (details) => details.data.id != item.id,
+          onAcceptWithDetails: (details) => _moveItem(details.data, null, targetIndex: index),
+          builder: (context, candidateData, rejectedData) {
+            final isHovering = candidateData.isNotEmpty;
+            
+            return Column(
+              children: [
+                // Önizleme çubuğu - öğenin üzerine gelince göster
+                if (isHovering)
+                  Container(
+                    height: 3,
+                    margin: const EdgeInsets.symmetric(horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFe94560),
+                      borderRadius: BorderRadius.circular(2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFe94560).withValues(alpha: 0.5),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                  ),
+                
+                // Ana öğe
+                _buildItem(item),
+                
+                // Alt çizgi - son öğe ise göster
+                if (index == _rootItems.length - 1 && isHovering)
+                  Container(
+                    height: 3,
+                    margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFe94560),
+                      borderRadius: BorderRadius.circular(2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFe94560).withValues(alpha: 0.5),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
@@ -707,6 +771,24 @@ class _FolderPageState extends State<FolderPage> {
                 color: folderColor, // Klasör rengiyle aynı
               )
             ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit, size: 20),
+                  onPressed: () => _renameItem(item),
+                  tooltip: "Yeniden Adlandır",
+                ),
+                IconButton(
+                  icon: const Icon(Icons.create_new_folder, size: 20), 
+                  onPressed: () => _addItem(parentId: item.id, isFolder: true)
+                ),
+                IconButton(
+                  icon: const Icon(Icons.note_add, size: 20), 
+                  onPressed: () => _addItem(parentId: item.id, isFolder: false)
+                ),
+              ],
+            ),
             children: [
               Padding(
                 padding: const EdgeInsets.only(left: 16.0),
@@ -753,7 +835,17 @@ class _FolderPageState extends State<FolderPage> {
                 ? Text("${item.reminder!.day}/${item.reminder!.month} ${item.reminder!.hour}:${item.reminder!.minute}", style: const TextStyle(color: Colors.black54)) 
                 : null,
             onTap: () => _cyclePriority(item),
-            trailing: IconButton(icon: const Icon(Icons.alarm, color: Colors.black54), onPressed: () => _setReminder(item)),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.edit, color: Colors.black54, size: 20),
+                  onPressed: () => _renameItem(item),
+                  tooltip: "Yeniden Adlandır",
+                ),
+                IconButton(icon: const Icon(Icons.alarm, color: Colors.black54), onPressed: () => _setReminder(item)),
+              ],
+            ),
           ),
         ),
       );
@@ -1048,11 +1140,88 @@ class _FolderPageState extends State<FolderPage> {
     return false;
   }
 
-  Future<void> _moveItem(Item draggedItem, String? newParentId) async {
+  Future<void> _reorderAllItems({String? parentId}) async {
+    final items = await DatabaseHelper.instance.getItems(parentId: parentId);
+    
+    // Tüm öğeleri mevcut sıralarına göre yeniden numaralandır
+    for (int i = 0; i < items.length; i++) {
+      if (items[i].sortOrder != i) {
+        items[i].sortOrder = i;
+        await DatabaseHelper.instance.updateItem(items[i]);
+        await FirestoreService().syncItem(items[i]);
+      }
+    }
+    
+    // Alt klasörleri de sırala
+    for (var item in items) {
+      if (item.isFolder) {
+        await _reorderAllItems(parentId: item.id);
+      }
+    }
+  }
+
+  Future<void> _moveItem(Item draggedItem, String? newParentId, {int? targetIndex}) async {
     if (draggedItem.id == newParentId) return;
+    
+    // Eğer çöp kutusuna taşıyorsa (newParentId == "delete")
+    if (newParentId == "delete") {
+      await _deleteItem(draggedItem);
+      return;
+    }
+    
+    // Eğer aynı parent içinde sıralama ise
+    if (draggedItem.parentId == newParentId && targetIndex != null) {
+      final items = await DatabaseHelper.instance.getItems(parentId: newParentId);
+      
+      // Sıralama mantığı
+      if (draggedItem.sortOrder < targetIndex) {
+        // Sağa taşıma (artan sıra)
+        for (var item in items) {
+          if (item.sortOrder > draggedItem.sortOrder && item.sortOrder <= targetIndex) {
+            item.sortOrder--;
+            await DatabaseHelper.instance.updateItem(item);
+            await FirestoreService().syncItem(item);
+          }
+        }
+      } else {
+        // Sola taşıma (azalan sıra)
+        for (var item in items) {
+          if (item.sortOrder >= targetIndex && item.sortOrder < draggedItem.sortOrder) {
+            item.sortOrder++;
+            await DatabaseHelper.instance.updateItem(item);
+            await FirestoreService().syncItem(item);
+          }
+        }
+      }
+      
+      draggedItem.sortOrder = targetIndex;
+      await DatabaseHelper.instance.updateItem(draggedItem);
+      await FirestoreService().syncItem(draggedItem);
+      
+      // Tüm öğeleri yeniden sırala ve UI'ı güncelle
+      await _reorderAllItems(parentId: newParentId);
+      _loadItems();
+      return;
+    }
+    
+    // Farklı parent'a taşıma
     draggedItem.parentId = newParentId;
+    
+    // Yeni parent'daki en yüksek sortOrder değerini bul
+    final items = await DatabaseHelper.instance.getItems(parentId: newParentId);
+    final maxSortOrder = items.isEmpty ? 0 : items.map((item) => item.sortOrder).reduce((a, b) => a > b ? a : b) + 1;
+    draggedItem.sortOrder = maxSortOrder;
+    
     await DatabaseHelper.instance.updateItem(draggedItem);
     await FirestoreService().syncItem(draggedItem);
+    _loadItems();
+  }
+
+  Future<void> _deleteItem(Item item) async {
+    await DatabaseHelper.instance.deleteItem(item.id);
+    await FirestoreService().deleteItem(item.id);
+    _deleteController.play();
+    _showSnack("Öğe silindi");
     _loadItems();
   }
 
@@ -1108,6 +1277,11 @@ class _FolderPageState extends State<FolderPage> {
   Future<void> _addItem({String? parentId, bool isFolder = false}) async {
     print("_addItem çağrıldı - isFolder: $isFolder, parentId: $parentId");
     final controller = TextEditingController();
+    
+    // Mevcut öğelerin en yüksek sortOrder değerini bul
+    final items = await DatabaseHelper.instance.getItems(parentId: parentId);
+    final maxSortOrder = items.isEmpty ? 0 : items.map((item) => item.sortOrder).reduce((a, b) => a > b ? a : b) + 1;
+    
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1119,8 +1293,14 @@ class _FolderPageState extends State<FolderPage> {
             print("Ekle butonuna basıldı - text: '${controller.text}'");
             if (controller.text.isNotEmpty) {
               try {
-                Item newItem = Item(id: const Uuid().v4(), name: controller.text, isFolder: isFolder, parentId: parentId);
-                print("Item oluşturuldu: ${newItem.name}");
+                Item newItem = Item(
+                  id: const Uuid().v4(), 
+                  name: controller.text, 
+                  isFolder: isFolder, 
+                  parentId: parentId,
+                  sortOrder: maxSortOrder, // Yeni sıralama değeri
+                );
+                print("Item oluşturuldu: ${newItem.name}, sortOrder: ${newItem.sortOrder}");
                 await DatabaseHelper.instance.insertItem(newItem);
                 print("Veritabanına eklendi");
                 await FirestoreService().syncItem(newItem);
@@ -1140,6 +1320,69 @@ class _FolderPageState extends State<FolderPage> {
               }
             }
           }, child: const Text("Ekle")),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _renameItem(Item item) async {
+    final controller = TextEditingController(text: item.name);
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        title: Text(
+          item.isFolder ? "Klasörü Yeniden Adlandır" : "Notu Yeniden Adlandır",
+          style: const TextStyle(color: Colors.white),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: "Yeni ad girin...",
+            hintStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Colors.white54),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: Color(0xFFe94560)),
+            ),
+          ),
+          style: const TextStyle(color: Colors.white),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("İptal", style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              if (controller.text.isNotEmpty && controller.text != item.name) {
+                try {
+                  item.name = controller.text;
+                  await DatabaseHelper.instance.updateItem(item);
+                  await FirestoreService().syncItem(item);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  _loadItems();
+                  _showSnack("Adlandırıldı");
+                } catch (e) {
+                  if (ctx.mounted) {
+                    Navigator.pop(ctx);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text("Hata: $e"), backgroundColor: Colors.red),
+                    );
+                  }
+                }
+              } else {
+                Navigator.pop(ctx);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFe94560),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text("Kaydet"),
+          ),
         ],
       ),
     );
