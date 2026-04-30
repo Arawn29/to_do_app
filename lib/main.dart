@@ -55,15 +55,170 @@ class MyApp extends StatelessWidget {
           surface: const Color(0xFF1a1a2e), // Gece mavisi
         ),
       ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(body: Center(child: CircularProgressIndicator()));
-          }
-          if (snapshot.hasData) return const FolderPage();
-          return const LoginPage();
-        },
+      home: const LoadingScreen(),
+    );
+}
+
+// Yükleme ekranı - her zaman önce bu gösterilir
+class LoadingScreen extends StatefulWidget {
+  const LoadingScreen({super.key});
+
+  @override
+  State<LoadingScreen> createState() => _LoadingScreenState();
+}
+
+class _LoadingScreenState extends State<LoadingScreen> with TickerProviderStateMixin {
+  late AnimationController _cloudController;
+  late AnimationController _fadeController;
+  late Animation<double> _cloudAnimation;
+  late Animation<double> _fadeAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    
+    _cloudController = AnimationController(
+      duration: const Duration(seconds: 2),
+      vsync: this,
+    );
+    
+    _fadeController = AnimationController(
+      duration: const Duration(milliseconds: 800),
+      vsync: this,
+    );
+    
+    _cloudAnimation = Tween<double>(begin: -0.1, end: 0.1).animate(
+      CurvedAnimation(parent: _cloudController, curve: Curves.easeInOut),
+    );
+    
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _fadeController, curve: Curves.easeIn),
+    );
+    
+    _cloudController.repeat(reverse: true);
+    _fadeController.forward();
+    
+    // Başlangıç işlemlerini yap ve doğru ekrana yönlendir
+    _initializeApp();
+  }
+
+  @override
+  void dispose() {
+    _cloudController.dispose();
+    _fadeController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initializeApp() async {
+    // Firebase auth durumunu bekle
+    await Future.delayed(const Duration(milliseconds: 1500));
+    
+    if (!mounted) return;
+    
+    // Auth durumunu kontrol et
+    final user = FirebaseAuth.instance.currentUser;
+    
+    if (mounted) {
+      if (user != null) {
+        // Kullanıcı giriş yapmışsa ana ekrana git
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const FolderPage()),
+        );
+      } else {
+        // Kullanıcı giriş yapmamışsa login ekranına git
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (context) => const LoginPage()),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFF1a1a2e),
+              Color(0xFF16213e),
+              Color(0xFF0f3460),
+            ],
+          ),
+        ),
+        child: Center(
+          child: FadeTransition(
+            opacity: _fadeAnimation,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                // Bulut ikonu ve animasyon
+                AnimatedBuilder(
+                  animation: _cloudAnimation,
+                  builder: (context, child) {
+                    return Transform.translate(
+                      offset: Offset(_cloudAnimation.value * 20, 0),
+                      child: child,
+                    );
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(30),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFFe94560).withOpacity(0.1),
+                      border: Border.all(
+                        color: const Color(0xFFe94560).withOpacity(0.3),
+                        width: 2,
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.cloud,
+                      size: 80,
+                      color: Color(0xFFe94560),
+                    ),
+                  ),
+                ),
+                
+                const SizedBox(height: 40),
+                
+                // Başlık
+                const Text(
+                  'Not Defterim',
+                  style: TextStyle(
+                    fontSize: 32,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                
+                const SizedBox(height: 10),
+                
+                // Alt başlık
+                const Text(
+                  'Buluta bağlanılıyor...',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.white70,
+                  ),
+                ),
+                
+                const SizedBox(height: 40),
+                
+                // Yükleme göstergesi
+                const SizedBox(
+                  width: 40,
+                  height: 40,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 3,
+                    valueColor: AlwaysStoppedAnimation<Color>(Color(0xFFe94560)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
